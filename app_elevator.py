@@ -1,670 +1,546 @@
 """
 VozElevate — Ascensor Inteligente Multimodal
-============================================
-Modalidades de entrada:
-  · Voz       → mic_recorder + Google Speech Recognition
-  · Botones   → Streamlit buttons (sidebar)
-  · Dibujo    → Canvas dibujable → CNN MNIST → reconoce número 1-6
+Un solo archivo: app.py
+Ejecutar con: streamlit run app.py
 
-Comunicación con Wokwi:
-  · MQTT: broker.mqttdashboard.com  topic: vozelevate/cmd
-  · Payload JSON: {"piso": 4, "accion": "mover"}
-                  {"accion": "emergencia"}
-                  {"accion": "cancelar"}
+CORRECCIÓN: eliminado bokeh (incompatible con NumPy >= 1.24).
+La voz usa un componente HTML5 con st.components.v1.html
+que llama webkitSpeechRecognition y devuelve el texto via URL param.
 """
 
-# ══════════════════════════════════════════════════════════════
-# IMPORTS
-# ══════════════════════════════════════════════════════════════
-import os
-import io
+import re
 import time
 import json
-import re
-
+import pickle
+import pathlib
+import threading
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image, ImageOps
 
-# Voz
-from streamlit_mic_recorder import mic_recorder
-import speech_recognition as sr
-
-# Dibujo
-from streamlit_drawable_canvas import st_canvas
-
-# MQTT
-import paho.mqtt.client as paho
-
-# Modelo CNN (se carga una sola vez con caché)
+# ── Canvas (dibujo) ───────────────────────────────────────────
 try:
-    import tensorflow as tf
-    TF_AVAILABLE = True
+    from streamlit_drawable_canvas import st_canvas
+    CANVAS_OK = True
 except ImportError:
-    TF_AVAILABLE = False
+    CANVAS_OK = False
 
+# ── MQTT ─────────────────────────────────────────────────────
+try:
+    import paho.mqtt.client as paho
+    MQTT_OK = True
+except ImportError:
+    MQTT_OK = False
 
-# ══════════════════════════════════════════════════════════════
-# CONFIGURACIÓN GENERAL
-# ══════════════════════════════════════════════════════════════
-BROKER    = "broker.mqttdashboard.com"
-PORT      = 1883
-TOPIC     = "vozelevate/cmd"
-CLIENT_ID = "VozElevate_App"
+# ─────────────────────────────────────────────────────────────
+# CONFIGURACIÓN
+# ─────────────────────────────────────────────────────────────
+st.set_page_config(page_title="VozElevate", page_icon="🛗", layout="centered")
 
-PISOS_VALIDOS = list(range(1, 7))
-ANGULOS_SERVO = {1: 0, 2: 30, 3: 60, 4: 90, 5: 120, 6: 150}
-
-PALABRAS_NUMERO = {
-    "uno": 1, "one": 1, "1": 1,
-    "dos": 2, "two": 2, "2": 2,
-    "tres": 3, "three": 3, "3": 3,
-    "cuatro": 4, "four": 4, "4": 4,
-    "cinco": 5, "five": 5, "5": 5,
-    "seis": 6, "six": 6, "6": 6,
-}
-
-MODEL_PATH = "model/handwritten.h5"
-
-
-# ══════════════════════════════════════════════════════════════
-# ESTADO DE SESIÓN
-# ══════════════════════════════════════════════════════════════
-def init_state():
-    defaults = {
-        "piso_actual":  1,
-        "piso_destino": None,
-        "estado":       "disponible",   # disponible | moviendo | emergencia
-        "log":          [],
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
-init_state()
-
-
-# ══════════════════════════════════════════════════════════════
-# MQTT
-# ══════════════════════════════════════════════════════════════
-def mqtt_publicar(payload: dict) -> bool:
-    try:
-        c = paho.Client(CLIENT_ID + "_pub")
-        c.connect(BROKER, PORT, keepalive=5)
-        result = c.publish(TOPIC, json.dumps(payload))
-        c.disconnect()
-        return result.rc == paho.MQTT_ERR_SUCCESS
-    except Exception as e:
-        agregar_log(f"⚠️ MQTT error: {e}", "error")
-        return False
-
-
-# ══════════════════════════════════════════════════════════════
-# LÓGICA CENTRAL DEL ASCENSOR
-# ══════════════════════════════════════════════════════════════
-def agregar_log(msg: str, tipo: str = "info"):
-    timestamp = time.strftime("%H:%M:%S")
-    st.session_state.log.append({"t": timestamp, "msg": msg, "tipo": tipo})
-    if len(st.session_state.log) > 50:
-        st.session_state.log = st.session_state.log[-50:]
-
-
-def mover_ascensor(piso_destino: int):
-    if st.session_state.estado == "emergencia":
-        st.warning("⚠️ Hay una emergencia activa. Cancélala primero.")
-        return
-    if piso_destino == st.session_state.piso_actual:
-        agregar_log(f"Ya estás en el piso {piso_destino}.", "info")
-        return
-    if piso_destino not in PISOS_VALIDOS:
-        agregar_log(f"Piso {piso_destino} no válido.", "error")
-        return
-
-    st.session_state.piso_destino = piso_destino
-    st.session_state.estado = "moviendo"
-    direccion = "⬆️ Subiendo" if piso_destino > st.session_state.piso_actual else "⬇️ Bajando"
-
-    agregar_log(f"Destino seleccionado: Piso {piso_destino}", "ok")
-    agregar_log(f"{direccion} al piso {piso_destino}...", "info")
-
-    mqtt_publicar({
-        "accion": "mover",
-        "piso":   piso_destino,
-        "desde":  st.session_state.piso_actual,
-        "angulo": ANGULOS_SERVO[piso_destino],
-    })
-
-    paso = 1 if piso_destino > st.session_state.piso_actual else -1
-    piso_tmp = st.session_state.piso_actual
-    placeholder = st.empty()
-
-    while piso_tmp != piso_destino:
-        piso_tmp += paso
-        st.session_state.piso_actual = piso_tmp
-        dir_icon = "⬆️" if paso == 1 else "⬇️"
-        with placeholder.container():
-            st.info(f"{dir_icon} Pasando por piso **{piso_tmp}**...")
-        time.sleep(0.9)
-
-    placeholder.empty()
-
-    st.session_state.estado = "disponible"
-    st.session_state.piso_destino = None
-    agregar_log(f"✅ Llegaste al piso {piso_destino}. Puertas abiertas.", "ok")
-
-    mqtt_publicar({
-        "accion": "llegada",
-        "piso":   piso_destino,
-        "angulo": ANGULOS_SERVO[piso_destino],
-    })
-
-
-def activar_emergencia():
-    st.session_state.estado = "emergencia"
-    agregar_log("🚨 EMERGENCIA activada. Ascensor detenido.", "error")
-    mqtt_publicar({"accion": "emergencia", "piso": st.session_state.piso_actual})
-
-
-def cancelar_emergencia():
-    st.session_state.estado = "disponible"
-    agregar_log("✅ Emergencia cancelada. Sistema disponible.", "ok")
-    mqtt_publicar({"accion": "cancelar"})
-
-
-# ══════════════════════════════════════════════════════════════
-# RECONOCIMIENTO DE VOZ
-# ══════════════════════════════════════════════════════════════
-def extraer_piso_de_texto(texto: str):
-    texto = texto.lower().strip()
-    matches = re.findall(r"\b([1-6])\b", texto)
-    if matches:
-        return int(matches[0])
-    for palabra, num in PALABRAS_NUMERO.items():
-        if palabra in texto:
-            return num
-    return None
-
-
-def reconocer_audio(audio_bytes: bytes):
-    recognizer = sr.Recognizer()
-    try:
-        audio_file = io.BytesIO(audio_bytes)
-        with sr.AudioFile(audio_file) as source:
-            audio_data = recognizer.record(source)
-        return recognizer.recognize_google(audio_data, language="es-ES")
-    except sr.UnknownValueError:
-        return None
-    except sr.RequestError as e:
-        agregar_log(f"Error Google Speech: {e}", "error")
-        return None
-    except Exception as e:
-        agregar_log(f"Error audio: {e}", "error")
-        return None
-
-
-# ══════════════════════════════════════════════════════════════
-# RECONOCIMIENTO DE DIBUJO
-# ══════════════════════════════════════════════════════════════
-@st.cache_resource(show_spinner=False)
-def cargar_modelo():
-    if not TF_AVAILABLE:
-        return None
-    if not os.path.exists(MODEL_PATH):
-        return None
-    try:
-        return tf.keras.models.load_model(MODEL_PATH)
-    except Exception:
-        return None
-
-
-def predecir_digito(imagen_rgba: np.ndarray):
-    modelo = cargar_modelo()
-    if modelo is None:
-        return None
-    try:
-        img = Image.fromarray(imagen_rgba.astype("uint8"), "RGBA")
-        img = img.convert("L")
-        img = ImageOps.invert(img)
-        img = img.resize((28, 28))
-        arr = np.array(img, dtype="float32") / 255.0
-        arr = arr.reshape((1, 28, 28, 1))
-        pred = modelo.predict(arr, verbose=0)
-        return int(np.argmax(pred[0]))
-    except Exception as e:
-        agregar_log(f"CNN error: {e}", "error")
-        return None
-
-
-# ══════════════════════════════════════════════════════════════
-# ESTILOS CSS
-# ══════════════════════════════════════════════════════════════
-CSS = """
+# ─────────────────────────────────────────────────────────────
+# CSS
+# ─────────────────────────────────────────────────────────────
+st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
 
 :root {
-    --bg:     #0A0F1E;
-    --card:   #111827;
-    --panel:  #1A2235;
-    --cyan:   #00E5FF;
-    --teal:   #00B4CC;
-    --aqua:   #00FFD1;
-    --white:  #FFFFFF;
-    --silver: #CBD5E1;
-    --fog:    #64748B;
-    --green:  #00FF94;
-    --amber:  #FFB800;
-    --red:    #FF3B5C;
-    --lilac:  #C084FC;
+    --bg:      #0b0f1a;
+    --surface: #111827;
+    --sur2:    #1a2235;
+    --border:  #1e2d45;
+    --cyan:    #00e5ff;
+    --indigo:  #6366f1;
+    --green:   #00e676;
+    --amber:   #ffab00;
+    --red:     #ff1744;
+    --text:    #e2e8f0;
+    --muted:   #64748b;
 }
-
-html, body, .stApp {
-    background-color: var(--bg) !important;
-    font-family: 'Quicksand', sans-serif !important;
-    color: var(--white) !important;
-}
+html, body, .stApp { background-color: var(--bg) !important; }
+* { font-family: 'Syne', sans-serif !important; }
 #MainMenu, footer, header { visibility: hidden; }
+.block-container { max-width: 480px !important; padding: 1.5rem 1rem 5rem !important; margin: 0 auto !important; }
 
-[data-testid="stSidebar"] {
-    background-color: var(--card) !important;
-    border-right: 1px solid #1E2D45;
-}
-[data-testid="stSidebar"] * { color: var(--silver) !important; }
+.topbar { display:flex; justify-content:space-between; align-items:center; padding:0.4rem 0.2rem 1.4rem; border-bottom:1px solid var(--border); margin-bottom:1.4rem; }
+.topbar-logo { font-size:1.1rem; font-weight:800; letter-spacing:0.06em; color:var(--cyan); text-shadow:0 0 12px rgba(0,229,255,0.5); }
+.topbar-sub  { font-size:0.65rem; font-weight:600; color:var(--muted); letter-spacing:0.12em; text-transform:uppercase; }
 
-.stTabs [data-baseweb="tab-list"] {
-    background: var(--card) !important;
-    border-radius: 16px !important;
-    padding: 4px !important;
-    gap: 4px !important;
-}
-.stTabs [data-baseweb="tab"] {
-    background: transparent !important;
-    color: var(--fog) !important;
-    border-radius: 12px !important;
-    font-weight: 700 !important;
-    font-size: 0.85rem !important;
-    padding: 0.4rem 1rem !important;
-}
-.stTabs [aria-selected="true"] {
-    background: var(--cyan) !important;
-    color: var(--bg) !important;
-}
+.elev-card { background:var(--surface); border:1px solid var(--border); border-radius:24px; padding:1.6rem 1.4rem 1.4rem; margin-bottom:1.2rem; position:relative; overflow:hidden; box-shadow:0 0 24px rgba(0,229,255,0.1); }
+.elev-card::before { content:''; position:absolute; top:0; left:50%; transform:translateX(-50%); width:60%; height:1px; background:linear-gradient(90deg,transparent,var(--cyan),transparent); }
+.floor-label { font-size:0.65rem; font-weight:600; color:var(--muted); letter-spacing:0.15em; text-transform:uppercase; text-align:center; margin-bottom:0.2rem; }
+.floor-num   { font-family:'JetBrains Mono',monospace !important; font-size:4.5rem; font-weight:600; color:var(--cyan); text-shadow:0 0 32px rgba(0,229,255,0.45); line-height:1; text-align:center; }
+.status-bar  { display:flex; align-items:center; justify-content:center; background:var(--sur2); border:1px solid var(--border); border-radius:12px; padding:0.55rem 1rem; font-size:0.85rem; font-weight:600; color:var(--text); min-height:2.4rem; margin-top:0.8rem; }
 
-.hud-bar {
-    background: var(--card);
-    border: 1px solid #1E2D45;
-    border-radius: 20px;
-    padding: 1rem 1.5rem;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 1.2rem;
-}
-.hud-piso {
-    font-size: 3rem;
-    font-weight: 700;
-    color: var(--cyan);
-    line-height: 1;
-}
-.hud-label {
-    font-size: 0.72rem;
-    font-weight: 600;
-    color: var(--fog);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    margin-bottom: 0.2rem;
-}
-.estado-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.35rem 1rem;
-    border-radius: 50px;
-    font-size: 0.8rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-}
-.estado-disponible { background: rgba(0,255,148,0.15); color: var(--green); border: 1px solid rgba(0,255,148,0.3); }
-.estado-moviendo   { background: rgba(255,184,0,0.15);  color: var(--amber); border: 1px solid rgba(255,184,0,0.3); }
-.estado-emergencia { background: rgba(255,59,92,0.15);  color: var(--red);   border: 1px solid rgba(255,59,92,0.3); }
+.leds { display:flex; justify-content:center; gap:0.6rem; margin-top:0.9rem; }
+.led  { width:10px; height:10px; border-radius:50%; background:var(--border); }
+.led.green  { background:var(--green); box-shadow:0 0 8px var(--green); }
+.led.amber  { background:var(--amber); box-shadow:0 0 8px var(--amber); animation:pulse 0.8s infinite; }
+.led.red    { background:var(--red);   box-shadow:0 0 8px var(--red);   animation:pulse 0.5s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
-.info-card {
-    background: var(--panel);
-    border-radius: 16px;
-    padding: 1rem 1.2rem;
-    margin-bottom: 0.8rem;
-    border: 1px solid #1E2D45;
-}
-.info-card-title {
-    font-size: 0.72rem;
-    font-weight: 700;
-    color: var(--fog);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    margin-bottom: 0.4rem;
-}
-.log-ok    { color: var(--green);  font-size: 0.82rem; padding: 0.2rem 0; }
-.log-error { color: var(--red);    font-size: 0.82rem; padding: 0.2rem 0; }
-.log-info  { color: var(--silver); font-size: 0.82rem; padding: 0.2rem 0; }
-.log-time  { color: var(--fog);    font-size: 0.72rem; margin-right: 0.4rem; }
+.sec-label { font-size:0.62rem; font-weight:700; color:var(--muted); letter-spacing:0.14em; text-transform:uppercase; margin:1.2rem 0 0.55rem 0.1rem; }
 
-.result-bubble {
-    background: var(--panel);
-    border: 1px solid var(--cyan);
-    border-radius: 14px;
-    padding: 0.8rem 1rem;
-    font-size: 0.92rem;
-    color: var(--white);
-    margin-top: 0.8rem;
+.info-card { background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:1rem 1.2rem; margin-bottom:0.7rem; }
+.info-row  { display:flex; align-items:center; gap:0.7rem; }
+.info-icon { font-size:1.4rem; flex-shrink:0; }
+.info-ttl  { font-size:0.68rem; font-weight:600; color:var(--muted); margin-bottom:0.1rem; }
+.info-val  { font-size:0.92rem; font-weight:700; color:var(--text); }
+.info-sub  { font-size:0.76rem; color:var(--muted); margin-top:0.1rem; }
+
+.result-pill { background:var(--sur2); border:1px solid var(--border); border-radius:14px; padding:0.8rem 1rem; font-size:0.88rem; font-weight:600; color:var(--text); margin-top:0.6rem; display:flex; align-items:flex-start; gap:0.5rem; }
+.mqtt-badge { font-size:0.7rem; font-weight:600; color:var(--muted); text-align:center; padding:0.4rem; background:var(--surface); border-radius:8px; border:1px solid var(--border); margin-bottom:0.5rem; }
+.hist-item  { font-family:'JetBrains Mono',monospace !important; font-size:0.72rem; color:var(--muted); padding:0.3rem 0; border-bottom:1px solid var(--border); }
+
+div[data-testid="stButton"]>button {
+    background:linear-gradient(135deg,var(--indigo),#4f46e5) !important;
+    color:white !important; border:none !important; border-radius:14px !important;
+    font-family:'Syne',sans-serif !important; font-weight:700 !important;
+    width:100% !important; transition:all 0.2s !important;
+    box-shadow:0 4px 14px rgba(99,102,241,0.3) !important;
 }
-.result-bubble span.label {
-    font-size: 0.7rem;
-    color: var(--cyan);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    display: block;
-    margin-bottom: 0.2rem;
-}
+div[data-testid="stButton"]>button:hover { transform:translateY(-1px) !important; }
 </style>
-"""
+""", unsafe_allow_html=True)
 
+# ─────────────────────────────────────────────────────────────
+# MQTT / WOKWI
+# ─────────────────────────────────────────────────────────────
+BROKER = "broker.mqttdashboard.com"
+PORT   = 1883
+TOPIC  = "vozelevate/cmd"
 
-# ══════════════════════════════════════════════════════════════
-# HELPERS DE UI
-# ══════════════════════════════════════════════════════════════
-def estado_css():
-    e = st.session_state.estado
-    if e == "disponible":
-        return "estado-disponible", "● DISPONIBLE"
-    elif e == "moviendo":
-        return "estado-moviendo", "▲ EN MOVIMIENTO"
+class WokwiBridge:
+    def __init__(self):
+        self._client = None
+        self._connected = False
+        self._error = None
+        if MQTT_OK:
+            try:
+                self._client = paho.Client("VozElevate_App")
+                self._client.on_connect    = lambda c,u,f,rc: setattr(self,'_connected', rc==0)
+                self._client.on_disconnect = lambda c,u,rc:   setattr(self,'_connected', False)
+                threading.Thread(target=self._connect, daemon=True).start()
+            except Exception as e:
+                self._error = str(e)
+
+    def _connect(self):
+        try:
+            self._client.connect(BROKER, PORT, keepalive=60)
+            self._client.loop_start()
+        except Exception as e:
+            self._error = str(e)
+
+    def publish(self, payload):
+        if self._client:
+            try: self._client.publish(TOPIC, json.dumps(payload))
+            except: pass
+
+    def send_move(self, floor):    self.publish({"cmd":"MOVE",    "floor":floor})
+    def send_arrived(self, floor): self.publish({"cmd":"ARRIVED", "floor":floor})
+    def send_emergency(self):      self.publish({"cmd":"EMERGENCY"})
+    def send_reset(self):          self.publish({"cmd":"RESET"})
+
+    def status(self):
+        if not MQTT_OK:      return "⚠️ paho-mqtt no instalado"
+        if self._connected:  return f"✅ Conectado · {BROKER}"
+        if self._error:      return f"❌ {self._error}"
+        return "🔄 Conectando…"
+
+# ─────────────────────────────────────────────────────────────
+# LÓGICA DEL ASCENSOR
+# ─────────────────────────────────────────────────────────────
+def init_elevator():
+    return {"current":1, "target":None, "state":"idle",
+            "message":"Selecciona un piso", "history":[]}
+
+def go_to_floor(ev, floor):
+    if floor == ev["current"]:
+        ev["message"] = f"Ya estás en el piso {floor} 👌"
+        ev["state"]   = "idle"
+        return
+    ev["target"]  = floor
+    ev["state"]   = "moving"
+    direction     = "⬆ Subiendo" if floor > ev["current"] else "⬇ Bajando"
+    ev["message"] = f"{direction} al piso {floor}…"
+    ev["history"].append(f"[{time.strftime('%H:%M:%S')}] Piso {ev['current']} → {floor}")
+
+def arrive(ev):
+    ev["current"] = ev["target"]
+    ev["target"]  = None
+    ev["state"]   = "arrived"
+    ev["message"] = f"🎉 Llegaste al piso {ev['current']}. Puertas abiertas."
+
+def set_emergency(ev):
+    ev["target"]  = None
+    ev["state"]   = "emergency"
+    ev["message"] = "🚨 Emergencia activada."
+    ev["history"].append(f"[{time.strftime('%H:%M:%S')}] EMERGENCIA en piso {ev['current']}")
+
+def reset_ev(ev):
+    ev["state"]   = "idle"
+    ev["message"] = "Selecciona un piso"
+
+# ─────────────────────────────────────────────────────────────
+# PARSER DE VOZ
+# ─────────────────────────────────────────────────────────────
+WORD2NUM = {
+    "uno":1,"primero":1,"dos":2,"segundo":2,"tres":3,"tercero":3,
+    "cuatro":4,"cuarto":4,"cinco":5,"quinto":5,"seis":6,"sexto":6,
+    "one":1,"two":2,"three":3,"four":4,"five":5,"six":6,
+}
+EMERGENCY_WORDS = {"emergencia","emergency","cancelar","cancel","paro","stop"}
+
+def parse_voice(text):
+    t = text.lower().strip()
+    for w in EMERGENCY_WORDS:
+        if w in t: return {"emergency": True}
+    nums = re.findall(r"\b([1-6])\b", t)
+    if nums: return {"floor": int(nums[0])}
+    for word, num in WORD2NUM.items():
+        if word in t: return {"floor": num}
+    return {"error": f"No entendí el piso en: \"{text}\""}
+
+# ─────────────────────────────────────────────────────────────
+# RECONOCIMIENTO DE DÍGITOS
+# ─────────────────────────────────────────────────────────────
+MODEL_PATH = pathlib.Path("model/mnist_fallback.pkl")
+
+def preprocess_image(pil_image):
+    img = ImageOps.grayscale(pil_image).resize((28, 28))
+    return (np.array(img, dtype="float32") / 255.0).reshape(1, 784)
+
+def predict_digit(pil_image):
+    keras_path = pathlib.Path("model/handwritten.h5")
+    if keras_path.exists():
+        try:
+            import tensorflow as tf
+            model = tf.keras.models.load_model(str(keras_path))
+            arr   = preprocess_image(pil_image).reshape(1, 28, 28, 1)
+            return int(np.argmax(model.predict(arr, verbose=0)[0]))
+        except: pass
+    if MODEL_PATH.exists():
+        try:
+            with open(MODEL_PATH, "rb") as f:
+                clf = pickle.load(f)
+            return int(clf.predict(preprocess_image(pil_image))[0])
+        except: pass
+    return None
+
+# ─────────────────────────────────────────────────────────────
+# SESSION STATE
+# ─────────────────────────────────────────────────────────────
+if "ev"         not in st.session_state: st.session_state.ev         = init_elevator()
+if "bridge"     not in st.session_state: st.session_state.bridge     = WokwiBridge()
+if "feedback"   not in st.session_state: st.session_state.feedback   = None
+if "draw_digit" not in st.session_state: st.session_state.draw_digit = None
+if "voice_text" not in st.session_state: st.session_state.voice_text = ""
+
+ev = st.session_state.ev
+br = st.session_state.bridge
+
+# ─────────────────────────────────────────────────────────────
+# ACCIÓN CENTRAL
+# ─────────────────────────────────────────────────────────────
+def action_go(floor, source):
+    if ev["state"] == "emergency":
+        st.session_state.feedback = ("red", "🚨 Emergencia activa. Cancela primero.")
+        return
+    go_to_floor(ev, floor)
+    if ev["state"] == "moving":
+        br.send_move(floor)
+        st.session_state.feedback = ("amber", f"[{source}] {ev['message']}")
+        steps = abs(floor - ev["current"]) if ev["target"] is None else abs(floor - ev["current"])
+        steps = max(1, steps)
+        bar = st.progress(0, text=ev["message"])
+        for i in range(steps):
+            time.sleep(0.7)
+            bar.progress((i + 1) / steps, text=ev["message"])
+        bar.empty()
+        arrive(ev)
+        br.send_arrived(ev["current"])
+        st.session_state.feedback = ("green", ev["message"])
+        reset_ev(ev)
     else:
-        return "estado-emergencia", "🚨 EMERGENCIA"
+        st.session_state.feedback = ("green", ev["message"])
 
+# ─────────────────────────────────────────────────────────────
+# TOP BAR
+# ─────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="topbar">
+    <div>
+        <div class="topbar-logo">🛗 VozElevate</div>
+        <div class="topbar-sub">Ascensor Multimodal</div>
+    </div>
+    <div style="font-size:1.2rem;display:flex;gap:0.5rem">⚙️ 🔔</div>
+</div>
+""", unsafe_allow_html=True)
 
-def render_hud():
-    css_class, label = estado_css()
-    destino_txt = (
-        f"→ Piso {st.session_state.piso_destino}"
-        if st.session_state.piso_destino
-        else "En espera"
-    )
+# ─────────────────────────────────────────────────────────────
+# TARJETA DEL ASCENSOR
+# ─────────────────────────────────────────────────────────────
+state = ev["state"]
+led_g = "green" if state in ("idle","arrived")  else ""
+led_a = "amber" if state == "moving"            else ""
+led_r = "red"   if state == "emergency"         else ""
+
+dest_html = ""
+if ev["target"]:
+    dest_html = f"""
+    <div style="text-align:center;margin-top:0.5rem">
+        <span style="font-size:0.65rem;color:#64748b;text-transform:uppercase;letter-spacing:0.1em">DESTINO</span><br>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:1.8rem;color:#6366f1;font-weight:600">{ev['target']}</span>
+    </div>"""
+
+st.markdown(f"""
+<div class="elev-card">
+    <div class="floor-label">PISO ACTUAL</div>
+    <div class="floor-num">{ev['current']}</div>
+    {dest_html}
+    <div class="status-bar">{ev['message']}</div>
+    <div class="leds">
+        <div class="led {led_g}"></div>
+        <div class="led {led_a}"></div>
+        <div class="led {led_r}"></div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# Feedback
+fb = st.session_state.feedback
+if fb:
+    color, msg = fb
+    icon = {"green":"✔","amber":"⬆","red":"🚨"}.get(color,"•")
     st.markdown(f"""
-    <div class="hud-bar">
+    <div class="result-pill">
+        <span>{icon}</span>
         <div>
-            <div class="hud-label">Piso actual</div>
-            <div class="hud-piso">{st.session_state.piso_actual}</div>
+            <div style="color:#64748b;font-size:0.68rem;font-weight:600;margin-bottom:0.1rem">ESTADO</div>
+            {msg}
         </div>
-        <div style="text-align:center">
-            <div class="hud-label">Estado</div>
-            <div class="estado-pill {css_class}">{label}</div>
-        </div>
-        <div style="text-align:right">
-            <div class="hud-label">Destino</div>
-            <div style="font-size:1.4rem;font-weight:700;color:#CBD5E1">{destino_txt}</div>
+    </div>""", unsafe_allow_html=True)
+
+st.markdown(f'<div class="mqtt-badge">Wokwi MQTT · {br.status()}</div>', unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────
+# TABS
+# ─────────────────────────────────────────────────────────────
+tab_voz, tab_btn, tab_draw, tab_hist = st.tabs(["🎤 Voz", "🔢 Botones", "✏️ Dibujo", "📋 Historial"])
+
+# ══ TAB VOZ ══════════════════════════════════════════════════
+with tab_voz:
+    st.markdown("""
+    <div class="info-card">
+        <div class="info-row">
+            <span class="info-icon">🎤</span>
+            <div>
+                <div class="info-ttl">INSTRUCCIÓN</div>
+                <div class="info-val">Presiona el micrófono y habla</div>
+                <div class="info-sub">Ej: "Ir al piso cuatro" · "Tres" · "Emergencia"</div>
+            </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
+    # Componente HTML5 con webkitSpeechRecognition
+    # Escribe el resultado en un input oculto que Streamlit lee via query_params
+    voice_html = """
+    <style>
+        #mic-btn {
+            background: linear-gradient(135deg, #6366f1, #4f46e5);
+            color: white; border: none; border-radius: 50px;
+            padding: 0.6rem 2rem; font-size: 1rem; font-weight: 700;
+            cursor: pointer; width: 100%; font-family: 'Syne', sans-serif;
+            box-shadow: 0 4px 14px rgba(99,102,241,0.4);
+            transition: all 0.2s;
+        }
+        #mic-btn:hover { transform: translateY(-1px); }
+        #mic-btn.listening {
+            background: linear-gradient(135deg, #ff1744, #b71c1c);
+            animation: pulse-btn 0.8s infinite;
+        }
+        @keyframes pulse-btn { 0%,100%{opacity:1} 50%{opacity:0.7} }
+        #voice-out {
+            margin-top: 0.7rem; padding: 0.6rem 0.9rem;
+            background: #1a2235; border: 1px solid #1e2d45;
+            border-radius: 10px; color: #e2e8f0;
+            font-family: 'Syne', sans-serif; font-size: 0.88rem;
+            min-height: 2rem;
+        }
+    </style>
 
-def render_log():
-    if not st.session_state.log:
-        return
-    st.markdown('<div class="info-card">', unsafe_allow_html=True)
-    st.markdown('<div class="info-card-title">📋 Historial de eventos</div>', unsafe_allow_html=True)
-    for entry in reversed(st.session_state.log[-8:]):
-        st.markdown(
-            f'<div class="log-{entry["tipo"]}">'
-            f'<span class="log-time">{entry["t"]}</span>{entry["msg"]}</div>',
-            unsafe_allow_html=True,
-        )
-    st.markdown('</div>', unsafe_allow_html=True)
+    <button id="mic-btn" onclick="startListen()">🎙 Iniciar escucha</button>
+    <div id="voice-out">Toca el botón y habla…</div>
+    <input type="hidden" id="voice-result" value="">
 
+    <script>
+    var recognizing = false;
+    var recognition;
 
-# ══════════════════════════════════════════════════════════════
-# APP PRINCIPAL
-# ══════════════════════════════════════════════════════════════
-st.set_page_config(
-    page_title="VozElevate",
-    page_icon="🛗",
-    layout="wide",
-)
-st.markdown(CSS, unsafe_allow_html=True)
+    function startListen() {
+        if (!('webkitSpeechRecognition' in window)) {
+            document.getElementById('voice-out').innerText = '⚠️ Tu navegador no soporta reconocimiento de voz. Usa Chrome.';
+            return;
+        }
+        if (recognizing) { recognition.stop(); return; }
 
+        recognition = new webkitSpeechRecognition();
+        recognition.lang = 'es-ES';
+        recognition.continuous = false;
+        recognition.interimResults = false;
 
-# ── Sidebar ───────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## 🛗 VozElevate")
+        var btn = document.getElementById('mic-btn');
+        btn.classList.add('listening');
+        btn.innerText = '⏹ Escuchando… (toca para parar)';
+        recognizing = true;
+
+        recognition.onresult = function(e) {
+            var texto = e.results[0][0].transcript;
+            document.getElementById('voice-out').innerText = '🗣️ Escuché: "' + texto + '"';
+            document.getElementById('voice-result').value = texto;
+            // Envía el texto a Streamlit via postMessage
+            window.parent.postMessage({type: 'VOICE_RESULT', text: texto}, '*');
+        };
+
+        recognition.onerror = function(e) {
+            document.getElementById('voice-out').innerText = '⚠️ Error: ' + e.error;
+        };
+
+        recognition.onend = function() {
+            recognizing = false;
+            btn.classList.remove('listening');
+            btn.innerText = '🎙 Iniciar escucha';
+        };
+
+        recognition.start();
+    }
+    </script>
+    """
+
+    # Renderizamos el componente de voz
+    components.html(voice_html, height=130)
+
     st.markdown("---")
-    st.markdown("### 👆 Seleccionar piso")
+    st.markdown('<div class="sec-label">✍️ O escribe el comando manualmente</div>', unsafe_allow_html=True)
 
-    cols = st.columns(2)
-    for i, piso in enumerate(PISOS_VALIDOS):
-        col = cols[i % 2]
-        with col:
-            disabled = (
-                st.session_state.estado in ("moviendo", "emergencia")
-                or piso == st.session_state.piso_actual
-            )
-            if st.button(f"Piso {piso}", key=f"btn_piso_{piso}",
-                         disabled=disabled, use_container_width=True):
-                mover_ascensor(piso)
+    col_inp, col_btn = st.columns([3, 1])
+    with col_inp:
+        voz_txt = st.text_input(
+            "Comando de voz",
+            placeholder="Ej: ir al piso 4 · tres · emergencia",
+            key="voz_input",
+            label_visibility="collapsed"
+        )
+    with col_btn:
+        if st.button("Enviar", key="voz_send"):
+            if voz_txt.strip():
+                parsed = parse_voice(voz_txt)
+                if "emergency" in parsed:
+                    set_emergency(ev); br.send_emergency()
+                    st.session_state.feedback = ("red", ev["message"])
+                elif "floor" in parsed:
+                    action_go(parsed["floor"], "voz")
+                else:
+                    st.session_state.feedback = ("red", parsed.get("error",""))
                 st.rerun()
 
-    st.markdown("---")
-    st.markdown("### 🚨 Emergencia")
+    st.caption("💡 El micrófono funciona en Chrome/Edge. El resultado de voz también puedes escribirlo arriba.")
+
+# ══ TAB BOTONES ══════════════════════════════════════════════
+with tab_btn:
+    st.markdown('<div class="sec-label">🔢 Selecciona el piso</div>', unsafe_allow_html=True)
+    cols = st.columns(3)
+    for i, floor in enumerate([1, 2, 3, 4, 5, 6]):
+        with cols[i % 3]:
+            if st.button(f"  {floor}  ", key=f"floor_{floor}"):
+                action_go(floor, "botón")
+                st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🚨 Activar", use_container_width=True):
-            activar_emergencia()
+        if st.button("🚨 Emergencia", key="emg"):
+            set_emergency(ev); br.send_emergency()
+            st.session_state.feedback = ("red", ev["message"])
             st.rerun()
     with c2:
-        if st.button("✅ Cancelar", use_container_width=True):
-            cancelar_emergencia()
+        if st.button("↺ Reiniciar", key="rst"):
+            reset_ev(ev); br.send_reset()
+            st.session_state.feedback = ("green", "Sistema reiniciado.")
             st.rerun()
 
-    st.markdown("---")
-    st.markdown(
-        "<small style='color:#64748B'>Streamlit + Wokwi + MQTT<br>Proyecto Final · 2025</small>",
-        unsafe_allow_html=True,
-    )
-
-
-# ── Título y HUD ─────────────────────────────────────────────
-st.markdown("## 🛗 VozElevate — Ascensor Inteligente Multimodal")
-render_hud()
-
-tab_voz, tab_dibujo, tab_log = st.tabs(["🎙️ Voz", "✏️ Dibujo", "📋 Historial"])
-
-
-# ════════════════════════════════════════════════════════════
-# TAB 1 — CONTROL POR VOZ
-# ════════════════════════════════════════════════════════════
-with tab_voz:
-    st.markdown('<div class="info-card">', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="info-card-title">Instrucciones</div>'
-        '<p style="color:#CBD5E1;font-size:0.88rem;margin:0">'
-        'Presiona <strong>Grabar</strong>, habla y presiona <strong>Detener</strong>.<br>'
-        'Ejemplos: '
-        '<code style="background:#0A0F1E;padding:2px 6px;border-radius:6px">"ir al piso 4"</code> · '
-        '<code style="background:#0A0F1E;padding:2px 6px;border-radius:6px">"sube al tres"</code> · '
-        '<code style="background:#0A0F1E;padding:2px 6px;border-radius:6px">"dos"</code>'
-        '</p>',
-        unsafe_allow_html=True,
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # Grabador de micrófono
-    audio = mic_recorder(
-        start_prompt="🎙️  Iniciar grabación",
-        stop_prompt="⏹️  Detener y reconocer",
-        just_once=True,
-        use_container_width=True,
-        key="mic_voz",
-    )
-
-    if audio and audio.get("bytes"):
-        with st.spinner("🧠 Reconociendo audio..."):
-            texto_reconocido = reconocer_audio(audio["bytes"])
-
-        if texto_reconocido:
-            st.markdown(f"""
-            <div class="result-bubble">
-                <span class="label">VOZ RECONOCIDA</span>
-                "{texto_reconocido}"
+# ══ TAB DIBUJO ═══════════════════════════════════════════════
+with tab_draw:
+    st.markdown("""
+    <div class="info-card">
+        <div class="info-row">
+            <span class="info-icon">✏️</span>
+            <div>
+                <div class="info-ttl">INSTRUCCIÓN</div>
+                <div class="info-val">Dibuja el número del piso</div>
+                <div class="info-sub">Escribe un número del 1 al 6 en el lienzo</div>
             </div>
-            """, unsafe_allow_html=True)
-
-            piso = extraer_piso_de_texto(texto_reconocido)
-
-            if piso:
-                st.success(f"🎯 Piso identificado: **{piso}**")
-                agregar_log(f'Voz: "{texto_reconocido}" → Piso {piso}', "ok")
-                mover_ascensor(piso)
-                st.rerun()
-            else:
-                st.warning("⚠️ No se identificó un piso válido (1–6). Intenta de nuevo.")
-                agregar_log(f'Voz sin piso válido: "{texto_reconocido}"', "error")
-        else:
-            st.error("❌ No se pudo entender el audio. Habla más cerca del micrófono.")
-            agregar_log("Audio no reconocido", "error")
-
-    # Comandos de referencia
-    st.markdown("---")
-    st.markdown("**Comandos de ejemplo:**")
-    ejemplos = [
-        ("⬆️", "subir al piso 5"),
-        ("⬇️", "bajar al dos"),
-        ("🎯", "ir al cuatro"),
-        ("🏠", "primer piso"),
-        ("6️⃣", "sexto piso"),
-        ("🚨", "emergencia"),
-    ]
-    cols = st.columns(3)
-    for i, (icon, cmd) in enumerate(ejemplos):
-        cols[i % 3].markdown(
-            f'<div class="info-card" style="text-align:center;padding:0.6rem">'
-            f'<div style="font-size:1.3rem">{icon}</div>'
-            f'<div style="font-size:0.78rem;color:#94A3B8;margin-top:0.2rem"><em>"{cmd}"</em></div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-
-
-# ════════════════════════════════════════════════════════════
-# TAB 2 — CONTROL POR DIBUJO
-# ════════════════════════════════════════════════════════════
-with tab_dibujo:
-    col_canvas, col_resultado = st.columns([1, 1], gap="large")
-
-    with col_canvas:
-        st.markdown('<div class="info-card-title">✏️ Dibuja el número del piso (1–6)</div>',
-                    unsafe_allow_html=True)
-
-        grosor = st.slider("Grosor del trazo", 8, 30, 18, key="grosor_canvas")
-
-        canvas_result = st_canvas(
-            fill_color="rgba(0,0,0,0)",
-            stroke_width=grosor,
-            stroke_color="#FFFFFF",
-            background_color="#000000",
-            height=220,
-            width=220,
-            drawing_mode="freedraw",
-            key="canvas_digito",
-            display_toolbar=True,
-        )
-
-        c1, c2 = st.columns(2)
-        boton_predecir = c1.button("🔍 Reconocer", use_container_width=True, type="primary")
-        boton_limpiar  = c2.button("🗑️ Limpiar",   use_container_width=True)
-
-    with col_resultado:
-        st.markdown('<div class="info-card-title">🤖 Resultado del reconocimiento</div>',
-                    unsafe_allow_html=True)
-
-        if boton_predecir:
-            if canvas_result.image_data is not None:
-                datos = canvas_result.image_data
-                pixels_con_contenido = np.sum(datos[:, :, 3] > 10)
-
-                if pixels_con_contenido < 50:
-                    st.warning("⚠️ El canvas está vacío. Dibuja primero un número.")
-                else:
-                    with st.spinner("Analizando dibujo..."):
-                        digito = predecir_digito(datos)
-
-                    if digito is None:
-                        st.info(
-                            "ℹ️ Modelo CNN no disponible.\n\n"
-                            "Sube `model/handwritten.h5` al repositorio, "
-                            "o usa los botones del panel lateral."
-                        )
-                        agregar_log("CNN no disponible", "error")
-                    elif digito < 1 or digito > 6:
-                        st.error(
-                            f"❌ Se reconoció **{digito}**, pero solo se aceptan pisos 1–6.\n\n"
-                            "Intenta dibujar más claro."
-                        )
-                        agregar_log(f"Dibujo: dígito {digito} fuera de rango", "error")
-                    else:
-                        st.success(f"✅ Número reconocido: **{digito}**")
-                        st.markdown(f"""
-                        <div style="font-size:4rem;font-weight:700;color:#00E5FF;
-                                    text-align:center;padding:1rem;background:#111827;
-                                    border-radius:16px;margin:0.5rem 0">{digito}</div>
-                        """, unsafe_allow_html=True)
-                        agregar_log(f"Dibujo reconocido: Piso {digito}", "ok")
-
-                        if st.button(f"🛗 Ir al Piso {digito}", type="primary",
-                                     use_container_width=True):
-                            mover_ascensor(digito)
-                            st.rerun()
-            else:
-                st.warning("⚠️ Dibuja un número antes de reconocer.")
-        else:
-            st.markdown("""
-            <div style="background:#111827;border:2px dashed #1E2D45;border-radius:16px;
-                        padding:2.5rem;text-align:center;color:#64748B">
-                <div style="font-size:2.5rem;margin-bottom:0.5rem">✏️</div>
-                <div style="font-weight:600">Dibuja un número<br>y presiona <em>Reconocer</em></div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown("---")
-        st.markdown("""
-        <div class="info-card">
-            <div class="info-card-title">ℹ️ Cómo funciona</div>
-            <ul style="color:#94A3B8;font-size:0.82rem;margin:0;padding-left:1.2rem">
-                <li>Dibuja el número del piso en el canvas negro</li>
-                <li>El modelo CNN (entrenado con MNIST) reconoce el dígito</li>
-                <li>Solo se acepta del <strong style="color:#00E5FF">1 al 6</strong></li>
-                <li>Presiona <em>Reconocer</em> para analizar</li>
-            </ul>
         </div>
-        """, unsafe_allow_html=True)
+    </div>
+    """, unsafe_allow_html=True)
 
+    if not MODEL_PATH.exists():
+        st.info("⚙️ Modelo no encontrado. Ejecuta `python train_model.py` una vez para activar el reconocimiento.")
 
-# ════════════════════════════════════════════════════════════
-# TAB 3 — HISTORIAL
-# ════════════════════════════════════════════════════════════
-with tab_log:
-    if not st.session_state.log:
-        st.info("Aún no hay eventos. Usa el ascensor para ver el historial aquí.")
+    if CANVAS_OK:
+        stroke_w = st.slider("Grosor del trazo", 8, 30, 16, key="stroke")
+        canvas = st_canvas(
+            fill_color="rgba(0,229,255,0.05)",
+            stroke_width=stroke_w,
+            stroke_color="#00e5ff",
+            background_color="#111827",
+            height=200, width=200,
+            drawing_mode="freedraw",
+            key="canvas",
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🔍 Reconocer dígito", key="predict"):
+                if canvas.image_data is not None:
+                    pil   = Image.fromarray(np.array(canvas.image_data).astype("uint8"), "RGBA")
+                    digit = predict_digit(pil)
+                    st.session_state.draw_digit = digit
+                    if digit is None:
+                        st.session_state.feedback = ("red", "No se pudo reconocer. Intenta de nuevo.")
+                    elif not (1 <= digit <= 6):
+                        st.session_state.feedback = ("amber", f"Dígito {digit} fuera de rango (1-6).")
+                    else:
+                        action_go(digit, "dibujo")
+                else:
+                    st.session_state.feedback = ("red", "El lienzo está vacío.")
+                st.rerun()
+        with c2:
+            if st.button("🗑 Limpiar", key="clear_canvas"):
+                st.session_state.draw_digit = None
+                st.rerun()
+
+        if st.session_state.draw_digit is not None:
+            st.markdown(f"""
+            <div class="result-pill">
+                <span>🔢</span>
+                <div>
+                    <div style="color:#64748b;font-size:0.68rem;font-weight:600">DÍGITO DETECTADO</div>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:2rem;color:#00e5ff">{st.session_state.draw_digit}</span>
+                </div>
+            </div>""", unsafe_allow_html=True)
     else:
-        render_log()
-        if st.button("🗑️ Limpiar historial"):
-            st.session_state.log = []
+        st.warning("Instala `streamlit-drawable-canvas` para activar el tablero.")
+        st.code("pip install streamlit-drawable-canvas")
+
+# ══ TAB HISTORIAL ════════════════════════════════════════════
+with tab_hist:
+    if not ev["history"]:
+        st.markdown('<div style="color:#64748b;font-size:0.85rem;text-align:center;padding:1.5rem 0">Sin viajes registrados aún</div>', unsafe_allow_html=True)
+    else:
+        for item in reversed(ev["history"][-20:]):
+            st.markdown(f'<div class="hist-item">› {item}</div>', unsafe_allow_html=True)
+        if st.button("🗑 Limpiar historial", key="clear_hist"):
+            ev["history"].clear()
             st.rerun()
-
-    st.markdown("---")
-    st.markdown("### 📊 Resumen de sesión")
-    total_ok    = sum(1 for e in st.session_state.log if e["tipo"] == "ok")
-    total_error = sum(1 for e in st.session_state.log if e["tipo"] == "error")
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Piso actual",      st.session_state.piso_actual)
-    c2.metric("Viajes exitosos",  total_ok)
-    c3.metric("Alertas",          total_error)
-    c4.metric("Total eventos",    len(st.session_state.log))
