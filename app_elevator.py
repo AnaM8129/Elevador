@@ -8,6 +8,28 @@ La voz usa un componente HTML5 con st.components.v1.html
 que llama webkitSpeechRecognition y devuelve el texto via URL param.
 """
 
+def get_or_train_model():
+    model_path = pathlib.Path("model/mnist_fallback.pkl")
+    if model_path.exists():
+        with open(model_path, "rb") as f:
+            return pickle.load(f)
+    
+    # Primera vez: entrena automático
+    from sklearn.datasets import fetch_openml
+    from sklearn.neighbors import KNeighborsClassifier
+    
+    pathlib.Path("model").mkdir(exist_ok=True)
+    with st.spinner("⚙️ Entrenando modelo por primera vez (~20 seg)…"):
+        mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="auto")
+        X = mnist.data.astype("float32") / 255.0
+        y = mnist.target.astype(int)
+        clf = KNeighborsClassifier(n_neighbors=3)
+        clf.fit(X[:5000], y[:5000])
+        with open(model_path, "wb") as f:
+            pickle.dump(clf, f)
+    return clf
+    
+
 import re
 import time
 import json
