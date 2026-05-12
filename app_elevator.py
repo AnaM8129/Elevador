@@ -298,6 +298,19 @@ msg = ev['message']
 current = ev['current']
 target_html = dest_html  # ya construido arriba
 
+st.markdown(f"""
+<div class="elev-card">
+    <div class="floor-label">PISO ACTUAL</div>
+    <div class="floor-num">{current}</div>
+    {target_html}
+    <div class="status-bar">{msg}</div>
+    <div class="leds">
+        <div class="led {led_g}"></div>
+        <div class="led {led_a}"></div>
+        <div class="led {led_r}"></div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 # Feedback
 fb = st.session_state.feedback
