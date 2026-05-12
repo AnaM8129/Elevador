@@ -19,7 +19,6 @@ import numpy as np
 import streamlit as st
 import html as html_lib 
 import streamlit.components.v1 as components
-from sklearn.neighbors import KNeighborsClassifier
 from PIL import Image, ImageOps
 
 # ── Canvas (dibujo) ───────────────────────────────────────────
