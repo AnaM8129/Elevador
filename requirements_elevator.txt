@@ -1,10 +1,26 @@
+# ══════════════════════════════════════════════════════════════
+# VozElevate — requirements_elevator.txt
+# ══════════════════════════════════════════════════════════════
+
+# ── Interfaz ──────────────────────────────────────────────────
 streamlit>=1.35.0
-bokeh==2.4.3
-streamlit-bokeh-events==0.1.2
+
+# ── Reconocimiento de voz (reemplaza bokeh) ───────────────────
+streamlit-mic-recorder==0.0.4
+SpeechRecognition==3.10.4
+
+# ── Canvas para dibujo ────────────────────────────────────────
 streamlit-drawable-canvas==0.9.3
+
+# ── Red neuronal ──────────────────────────────────────────────
 tensorflow-cpu==2.15.0
+
+# ── Procesamiento de imágenes ─────────────────────────────────
 Pillow==10.3.0
 numpy==1.26.4
+
+# ── MQTT ──────────────────────────────────────────────────────
 paho-mqtt==1.6.1
-matplotlib==3.9.0
-pandas==2.2.2
+
+# ── Audio processing ──────────────────────────────────────────
+pydub==0.25.1
