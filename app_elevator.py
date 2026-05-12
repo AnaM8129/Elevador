@@ -16,6 +16,7 @@ import pathlib
 import threading
 import numpy as np
 import streamlit as st
+import html as html_lib 
 import streamlit.components.v1 as components
 from PIL import Image, ImageOps
 
@@ -281,37 +282,42 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────
 # TARJETA DEL ASCENSOR
 # ─────────────────────────────────────────────────────────────
+ 
 state = ev["state"]
-led_g = "green" if state in ("idle","arrived")  else ""
+led_g = "green" if state in ("idle", "arrived") else ""
 led_a = "amber" if state == "moving"            else ""
 led_r = "red"   if state == "emergency"         else ""
-
+ 
+# Escapar caracteres especiales para que no rompan el HTML
+current = ev["current"]
+msg     = html_lib.escape(str(ev["message"]))
+ 
 dest_html = ""
 if ev["target"]:
-    dest_html = f"""
-    <div style="text-align:center;margin-top:0.5rem">
-        <span style="font-size:0.65rem;color:#64748b;text-transform:uppercase;letter-spacing:0.1em">DESTINO</span><br>
-        <span style="font-family:'JetBrains Mono',monospace;font-size:1.8rem;color:#6366f1;font-weight:600">{ev['target']}</span>
-    </div>"""
-
-msg = ev['message']
-current = ev['current']
-target_html = dest_html  # ya construido arriba
-
-st.markdown(f"""
-<div class="elev-card">
-    <div class="floor-label">PISO ACTUAL</div>
-    <div class="floor-num">{current}</div>
-    {target_html}
-    <div class="status-bar">{msg}</div>
-    <div class="leds">
-        <div class="led {led_g}"></div>
-        <div class="led {led_a}"></div>
-        <div class="led {led_r}"></div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
+    dest_html = (
+        '<div style="text-align:center;margin-top:0.5rem">'
+        '<span style="font-size:0.65rem;color:#64748b;text-transform:uppercase;'
+        'letter-spacing:0.1em">DESTINO</span><br>'
+        '<span style="font-family:JetBrains Mono,monospace;font-size:1.8rem;'
+        'color:#6366f1;font-weight:600">' + str(ev["target"]) + '</span>'
+        '</div>'
+    )
+ 
+card_html = (
+    '<div class="elev-card">'
+    '<div class="floor-label">PISO ACTUAL</div>'
+    '<div class="floor-num">' + str(current) + '</div>'
+    + dest_html +
+    '<div class="status-bar">' + msg + '</div>'
+    '<div class="leds">'
+    '<div class="led ' + led_g + '"></div>'
+    '<div class="led ' + led_a + '"></div>'
+    '<div class="led ' + led_r + '"></div>'
+    '</div>'
+    '</div>'
+)
+ 
+st.markdown(card_html, unsafe_allow_html=True)
 # Feedback
 fb = st.session_state.feedback
 if fb:
