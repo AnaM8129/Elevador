@@ -8,27 +8,6 @@ La voz usa un componente HTML5 con st.components.v1.html
 que llama webkitSpeechRecognition y devuelve el texto via URL param.
 """
 
-def get_or_train_model():
-    model_path = pathlib.Path("model/mnist_fallback.pkl")
-    if model_path.exists():
-        with open(model_path, "rb") as f:
-            return pickle.load(f)
-    
-    # Primera vez: entrena automático
-    from sklearn.datasets import fetch_openml
-    from sklearn.neighbors import KNeighborsClassifier
-    
-    pathlib.Path("model").mkdir(exist_ok=True)
-    with st.spinner("⚙️ Entrenando modelo por primera vez (~20 seg)…"):
-        mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="auto")
-        X = mnist.data.astype("float32") / 255.0
-        y = mnist.target.astype(int)
-        clf = KNeighborsClassifier(n_neighbors=3)
-        clf.fit(X[:5000], y[:5000])
-        with open(model_path, "wb") as f:
-            pickle.dump(clf, f)
-    return clf
-    
 
 import re
 import time
@@ -230,6 +209,26 @@ def parse_voice(text):
 # ─────────────────────────────────────────────────────────────
 MODEL_PATH = pathlib.Path("model/mnist_fallback.pkl")
 
+def get_or_train_model():
+    if MODEL_PATH.exists():                          # ¿ya existe el modelo?
+        with open(MODEL_PATH, "rb") as f:
+            return pickle.load(f)                    # sí → lo carga y listo
+    
+    # no existe → lo entrena automático
+    from sklearn.datasets import fetch_openml
+    from sklearn.neighbors import KNeighborsClassifier
+    
+    pathlib.Path("model").mkdir(exist_ok=True)
+    with st.spinner("⚙️ Entrenando modelo por primera vez (~20 seg)…"):
+        mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="auto")
+        X = mnist.data.astype("float32") / 255.0
+        y = mnist.target.astype(int)
+        clf = KNeighborsClassifier(n_neighbors=3)
+        clf.fit(X[:5000], y[:5000])
+        with open(MODEL_PATH, "wb") as f:
+            pickle.dump(clf, f)
+    return clf
+
 def preprocess_image(pil_image):
     img = ImageOps.grayscale(pil_image).resize((28, 28))
     return (np.array(img, dtype="float32") / 255.0).reshape(1, 784)
@@ -245,8 +244,7 @@ def predict_digit(pil_image):
         except: pass
     if MODEL_PATH.exists():
         try:
-            with open(MODEL_PATH, "rb") as f:
-                clf = pickle.load(f)
+            clf = get_or_train_model()               # ← SOLO CAMBIA ESTA LÍNEA
             return int(clf.predict(preprocess_image(pil_image))[0])
         except: pass
     return None
