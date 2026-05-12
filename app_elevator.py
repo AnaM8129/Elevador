@@ -294,12 +294,16 @@ if ev["target"]:
         <span style="font-family:'JetBrains Mono',monospace;font-size:1.8rem;color:#6366f1;font-weight:600">{ev['target']}</span>
     </div>"""
 
+msg = ev['message']
+current = ev['current']
+target_html = dest_html  # ya construido arriba
+
 st.markdown(f"""
 <div class="elev-card">
     <div class="floor-label">PISO ACTUAL</div>
-    <div class="floor-num">{ev['current']}</div>
-    {dest_html}
-    <div class="status-bar">{ev['message']}</div>
+    <div class="floor-num">{current}</div>
+    {target_html}
+    <div class="status-bar">{msg}</div>
     <div class="leds">
         <div class="led {led_g}"></div>
         <div class="led {led_a}"></div>
