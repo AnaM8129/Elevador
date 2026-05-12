@@ -19,6 +19,7 @@ import numpy as np
 import streamlit as st
 import html as html_lib 
 import streamlit.components.v1 as components
+from sklearn.neighbors import KNeighborsClassifier
 from PIL import Image, ImageOps
 
 # ── Canvas (dibujo) ───────────────────────────────────────────
@@ -210,14 +211,10 @@ def parse_voice(text):
 MODEL_PATH = pathlib.Path("model/mnist_fallback.pkl")
 
 def get_or_train_model():
-    if MODEL_PATH.exists():                          # ¿ya existe el modelo?
+    if MODEL_PATH.exists():
         with open(MODEL_PATH, "rb") as f:
-            return pickle.load(f)                    # sí → lo carga y listo
-    
-    # no existe → lo entrena automático
+            return pickle.load(f)
     from sklearn.datasets import fetch_openml
-    from sklearn.neighbors import KNeighborsClassifier
-    
     pathlib.Path("model").mkdir(exist_ok=True)
     with st.spinner("⚙️ Entrenando modelo por primera vez (~20 seg)…"):
         mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="auto")
@@ -225,6 +222,7 @@ def get_or_train_model():
         y = mnist.target.astype(int)
         clf = KNeighborsClassifier(n_neighbors=3)
         clf.fit(X[:5000], y[:5000])
+        pathlib.Path("model").mkdir(exist_ok=True)
         with open(MODEL_PATH, "wb") as f:
             pickle.dump(clf, f)
     return clf
@@ -242,13 +240,12 @@ def predict_digit(pil_image):
             arr   = preprocess_image(pil_image).reshape(1, 28, 28, 1)
             return int(np.argmax(model.predict(arr, verbose=0)[0]))
         except: pass
-    if MODEL_PATH.exists():
-        try:
-            clf = get_or_train_model()               # ← SOLO CAMBIA ESTA LÍNEA
-            return int(clf.predict(preprocess_image(pil_image))[0])
-        except: pass
-    return None
-
+    try:
+        clf = get_or_train_model()
+        return int(clf.predict(preprocess_image(pil_image))[0])
+    except:
+        return None
+        
 # ─────────────────────────────────────────────────────────────
 # SESSION STATE
 # ─────────────────────────────────────────────────────────────
