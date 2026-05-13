@@ -20,13 +20,8 @@ import streamlit as st
 import html as html_lib 
 import streamlit.components.v1 as components
 from PIL import Image, ImageOps
-
-# ── Canvas (dibujo) ───────────────────────────────────────────
-try:
-    from streamlit_drawable_canvas import st_canvas
-    CANVAS_OK = True
-except ImportError:
-    CANVAS_OK = False
+import tensorflow as tf
+from streamlit_drawable_canvas import st_canvas
 
 # ── MQTT ─────────────────────────────────────────────────────
 try:
@@ -207,42 +202,16 @@ def parse_voice(text):
 # ─────────────────────────────────────────────────────────────
 # RECONOCIMIENTO DE DÍGITOS
 # ─────────────────────────────────────────────────────────────
-MODEL_PATH = pathlib.Path("model/mnist_fallback.pkl")
-
-def get_or_train_model():
-    if MODEL_PATH.exists():
-        with open(MODEL_PATH, "rb") as f:
-            return pickle.load(f)
-    from sklearn.datasets import fetch_openml
-    pathlib.Path("model").mkdir(exist_ok=True)
-    with st.spinner("⚙️ Entrenando modelo por primera vez (~20 seg)…"):
-        mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="auto")
-        X = mnist.data.astype("float32") / 255.0
-        y = mnist.target.astype(int)
-        clf = KNeighborsClassifier(n_neighbors=3)
-        clf.fit(X[:5000], y[:5000])
-        pathlib.Path("model").mkdir(exist_ok=True)
-        with open(MODEL_PATH, "wb") as f:
-            pickle.dump(clf, f)
-    return clf
-
-def preprocess_image(pil_image):
-    img = ImageOps.grayscale(pil_image).resize((28, 28))
-    return (np.array(img, dtype="float32") / 255.0).reshape(1, 784)
-
 def predict_digit(pil_image):
-    keras_path = pathlib.Path("model/handwritten.h5")
-    if keras_path.exists():
-        try:
-            import tensorflow as tf
-            model = tf.keras.models.load_model(str(keras_path))
-            arr   = preprocess_image(pil_image).reshape(1, 28, 28, 1)
-            return int(np.argmax(model.predict(arr, verbose=0)[0]))
-        except: pass
     try:
-        clf = get_or_train_model()
-        return int(clf.predict(preprocess_image(pil_image))[0])
-    except:
+        model = tf.keras.models.load_model("model/handwritten.h5")
+        image = ImageOps.grayscale(pil_image)
+        img   = image.resize((28, 28))
+        img   = np.array(img, dtype="float32") / 255.0
+        img   = img.reshape((1, 28, 28, 1))
+        pred  = model.predict(img)
+        return int(np.argmax(pred[0]))
+    except Exception as e:
         return None
         
 # ─────────────────────────────────────────────────────────────
@@ -512,54 +481,53 @@ with tab_draw:
     </div>
     """, unsafe_allow_html=True)
 
-    if not MODEL_PATH.exists():
-        st.info("⚙️ Modelo no encontrado. Ejecuta `python train_model.py` una vez para activar el reconocimiento.")
+    stroke_width = st.slider("Grosor del trazo", 8, 30, 16, key="stroke")
 
-    if CANVAS_OK:
-        stroke_w = st.slider("Grosor del trazo", 8, 30, 16, key="stroke")
-        canvas = st_canvas(
-            fill_color="rgba(0,229,255,0.05)",
-            stroke_width=stroke_w,
-            stroke_color="#00e5ff",
-            background_color="#111827",
-            height=200, width=200,
-            drawing_mode="freedraw",
-            key="canvas",
-        )
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("🔍 Reconocer dígito", key="predict"):
-                if canvas.image_data is not None:
-                    pil   = Image.fromarray(np.array(canvas.image_data).astype("uint8"), "RGBA")
-                    digit = predict_digit(pil)
-                    st.session_state.draw_digit = digit
-                    if digit is None:
-                        st.session_state.feedback = ("red", "No se pudo reconocer. Intenta de nuevo.")
-                    elif not (1 <= digit <= 6):
-                        st.session_state.feedback = ("amber", f"Dígito {digit} fuera de rango (1-6).")
-                    else:
-                        action_go(digit, "dibujo")
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",
+        stroke_width=stroke_width,
+        stroke_color="#FFFFFF",
+        background_color="#000000",
+        height=200,
+        width=200,
+        drawing_mode="freedraw",
+        key="canvas",
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🔍 Reconocer dígito", key="predict"):
+            if canvas_result.image_data is not None:
+                input_image = Image.fromarray(
+                    np.array(canvas_result.image_data).astype("uint8"), "RGBA"
+                )
+                digit = predict_digit(input_image)
+                st.session_state.draw_digit = digit
+                if digit is None:
+                    st.session_state.feedback = ("red", "No se pudo reconocer. Intenta de nuevo.")
+                elif not (1 <= digit <= 6):
+                    st.session_state.feedback = ("amber", f"Dígito {digit} fuera de rango (1-6).")
                 else:
-                    st.session_state.feedback = ("red", "El lienzo está vacío.")
+                    action_go(digit, "dibujo")
                 st.rerun()
-        with c2:
-            if st.button("🗑 Limpiar", key="clear_canvas"):
-                st.session_state.draw_digit = None
+            else:
+                st.session_state.feedback = ("red", "El lienzo está vacío.")
                 st.rerun()
+    with c2:
+        if st.button("🗑 Limpiar", key="clear_canvas"):
+            st.session_state.draw_digit = None
+            st.rerun()
 
-        if st.session_state.draw_digit is not None:
-            st.markdown(f"""
-            <div class="result-pill">
-                <span>🔢</span>
-                <div>
-                    <div style="color:#64748b;font-size:0.68rem;font-weight:600">DÍGITO DETECTADO</div>
-                    <span style="font-family:'JetBrains Mono',monospace;font-size:2rem;color:#00e5ff">{st.session_state.draw_digit}</span>
-                </div>
-            </div>""", unsafe_allow_html=True)
-    else:
-        st.warning("Instala `streamlit-drawable-canvas` para activar el tablero.")
-        st.code("pip install streamlit-drawable-canvas")
-
+    if st.session_state.draw_digit is not None:
+        st.markdown(f"""
+        <div class="result-pill">
+            <span>🔢</span>
+            <div>
+                <div style="color:#64748b;font-size:0.68rem;font-weight:600">DÍGITO DETECTADO</div>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:2rem;color:#00e5ff">{st.session_state.draw_digit}</span>
+            </div>
+        </div>""", unsafe_allow_html=True)
+        
 # ══ TAB HISTORIAL ════════════════════════════════════════════
 with tab_hist:
     if not ev["history"]:
