@@ -1,7 +1,8 @@
 streamlit
-streamlit-drawable-canvas
-paho-mqtt>=1.6.1
-scikit-learn>=1.3.0
-Pillow>=10.0.0
-numpy>=1.24.0
 tensorflow
+matplotlib
+streamlit-drawable-canvas
+numpy
+Pillow
+paho-mqtt
+scikit-learn
