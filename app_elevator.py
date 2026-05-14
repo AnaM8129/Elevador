@@ -474,13 +474,7 @@ with tab_draw:
 
     stroke_width = st.slider("Grosor del trazo", 8, 30, 16, key="stroke")
 
-    st.markdown(
-        '<div style="height:210px; min-height:210px; background:#000; '
-        'border:2px solid #00e5ff; border-radius:12px; overflow:hidden; '
-        'margin-bottom:0.8rem;">',
-        unsafe_allow_html=True
-
-        canvas_result = st_canvas(
+    canvas_result = st_canvas(
         fill_color="rgba(0, 229, 255, 0.1)",
         stroke_width=stroke_width,
         stroke_color="#00e5ff",
@@ -490,9 +484,7 @@ with tab_draw:
         drawing_mode="freedraw",
         key="canvas",
     )
-    
-    st.markdown('</div>', unsafe_allow_html=True)
-    
+
     c1, c2 = st.columns(2)
     with c1:
         if st.button("🔍 Reconocer dígito", key="predict"):
@@ -521,11 +513,7 @@ with tab_draw:
         st.markdown(f"""
         <div class="result-pill">
             <span>🔢</span>
-            <div>
-                <div style="color:#64748b;font-size:0.68rem;font-weight:600">DÍGITO DETECTADO</div>
-                <span style="font-family:'JetBrains Mono',monospace;font-size:2rem;color:#00e5ff">{st.session_state.draw_digit}</span>
-            </div>
-        </div>""", unsafe_allow_html=True)
+            
 
 # ══ TAB HISTORIAL ════════════════════════════════════════════
 with tab_hist:
