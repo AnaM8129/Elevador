@@ -94,7 +94,6 @@ div[data-testid="stButton"]>button {
 }
 div[data-testid="stButton"]>button:hover { transform:translateY(-1px) !important; }
 
-/* ── Canvas fix ── */
 div[data-testid="stCustomComponentV1"] {
     height: 220px !important;
     min-height: 220px !important;
@@ -145,10 +144,10 @@ class WokwiBridge:
     def send_reset(self):          self.publish({"cmd":"RESET"})
 
     def status(self):
-        if not MQTT_OK:     return "⚠️ paho-mqtt no instalado"
-        if self._connected: return f"✅ Conectado · {BROKER}"
-        if self._error:     return f"❌ {self._error}"
-        return "🔄 Conectando…"
+        if not MQTT_OK:     return "paho-mqtt no instalado"
+        if self._connected: return "Conectado " + BROKER
+        if self._error:     return "Error: " + self._error
+        return "Conectando..."
 
 # ─────────────────────────────────────────────────────────────
 # LÓGICA DEL ASCENSOR
@@ -159,26 +158,26 @@ def init_elevator():
 
 def go_to_floor(ev, floor):
     if floor == ev["current"]:
-        ev["message"] = f"Ya estás en el piso {floor} 👌"
+        ev["message"] = "Ya estas en el piso " + str(floor)
         ev["state"]   = "idle"
         return
     ev["target"]  = floor
     ev["state"]   = "moving"
-    direction     = "⬆ Subiendo" if floor > ev["current"] else "⬇ Bajando"
-    ev["message"] = f"{direction} al piso {floor}…"
-    ev["history"].append(f"[{time.strftime('%H:%M:%S')}] Piso {ev['current']} → {floor}")
+    direction     = "Subiendo" if floor > ev["current"] else "Bajando"
+    ev["message"] = direction + " al piso " + str(floor)
+    ev["history"].append("[" + time.strftime('%H:%M:%S') + "] Piso " + str(ev["current"]) + " -> " + str(floor))
 
 def arrive(ev):
     ev["current"] = ev["target"]
     ev["target"]  = None
     ev["state"]   = "arrived"
-    ev["message"] = f"🎉 Llegaste al piso {ev['current']}. Puertas abiertas."
+    ev["message"] = "Llegaste al piso " + str(ev["current"]) + ". Puertas abiertas."
 
 def set_emergency(ev):
     ev["target"]  = None
     ev["state"]   = "emergency"
-    ev["message"] = "🚨 Emergencia activada."
-    ev["history"].append(f"[{time.strftime('%H:%M:%S')}] EMERGENCIA en piso {ev['current']}")
+    ev["message"] = "Emergencia activada."
+    ev["history"].append("[" + time.strftime('%H:%M:%S') + "] EMERGENCIA en piso " + str(ev["current"]))
 
 def reset_ev(ev):
     ev["state"]   = "idle"
@@ -202,7 +201,7 @@ def parse_voice(text):
     if nums: return {"floor": int(nums[0])}
     for word, num in WORD2NUM.items():
         if word in t: return {"floor": num}
-    return {"error": f"No entendí el piso en: \"{text}\""}
+    return {"error": "No entendi el piso en: " + text}
 
 # ─────────────────────────────────────────────────────────────
 # RECONOCIMIENTO DE DÍGITOS
@@ -236,12 +235,12 @@ br = st.session_state.bridge
 # ─────────────────────────────────────────────────────────────
 def action_go(floor, source):
     if ev["state"] == "emergency":
-        st.session_state.feedback = ("red", "🚨 Emergencia activa. Cancela primero.")
+        st.session_state.feedback = ("red", "Emergencia activa. Cancela primero.")
         return
     go_to_floor(ev, floor)
     if ev["state"] == "moving":
         br.send_move(floor)
-        st.session_state.feedback = ("amber", f"[{source}] {ev['message']}")
+        st.session_state.feedback = ("amber", "[" + source + "] " + ev["message"])
         steps = abs(floor - ev["current"]) if ev["target"] is None else abs(floor - ev["current"])
         steps = max(1, steps)
         bar = st.progress(0, text=ev["message"])
@@ -259,15 +258,15 @@ def action_go(floor, source):
 # ─────────────────────────────────────────────────────────────
 # TOP BAR
 # ─────────────────────────────────────────────────────────────
-st.markdown("""
-<div class="topbar">
-    <div>
-        <div class="topbar-logo">🛗 VozElevate</div>
-        <div class="topbar-sub">Ascensor Multimodal</div>
-    </div>
-    <div style="font-size:1.2rem;display:flex;gap:0.5rem">⚙️ 🔔</div>
-</div>
-""", unsafe_allow_html=True)
+st.markdown(
+    '<div class="topbar">'
+    '<div>'
+    '<div class="topbar-logo">VozElevate</div>'
+    '<div class="topbar-sub">Ascensor Multimodal</div>'
+    '</div>'
+    '</div>',
+    unsafe_allow_html=True
+)
 
 # ─────────────────────────────────────────────────────────────
 # TARJETA DEL ASCENSOR
@@ -284,14 +283,13 @@ dest_html = ""
 if ev["target"]:
     dest_html = (
         '<div style="text-align:center;margin-top:0.5rem">'
-        '<span style="font-size:0.65rem;color:#64748b;text-transform:uppercase;'
-        'letter-spacing:0.1em">DESTINO</span><br>'
-        '<span style="font-family:JetBrains Mono,monospace;font-size:1.8rem;'
-        'color:#6366f1;font-weight:600">' + str(ev["target"]) + '</span>'
-        '</div>'
+        '<span style="font-size:0.65rem;color:#64748b;text-transform:uppercase;letter-spacing:0.1em">DESTINO</span><br>'
+        '<span style="font-family:JetBrains Mono,monospace;font-size:1.8rem;color:#6366f1;font-weight:600">'
+        + str(ev["target"]) +
+        '</span></div>'
     )
 
-card_html = (
+st.markdown(
     '<div class="elev-card">'
     '<div class="floor-label">PISO ACTUAL</div>'
     '<div class="floor-num">' + str(current) + '</div>'
@@ -302,46 +300,46 @@ card_html = (
     '<div class="led ' + led_a + '"></div>'
     '<div class="led ' + led_r + '"></div>'
     '</div>'
-    '</div>'
+    '</div>',
+    unsafe_allow_html=True
 )
-
-st.markdown(card_html, unsafe_allow_html=True)
 
 # Feedback
 fb = st.session_state.feedback
 if fb:
-    color, msg = fb
-    icon = {"green":"✔","amber":"⬆","red":"🚨"}.get(color,"•")
-    st.markdown(f"""
-    <div class="result-pill">
-        <span>{icon}</span>
-        <div>
-            <div style="color:#64748b;font-size:0.68rem;font-weight:600;margin-bottom:0.1rem">ESTADO</div>
-            {msg}
-        </div>
-    </div>""", unsafe_allow_html=True)
+    color, msg_fb = fb
+    icon = {"green": "OK", "amber": "...", "red": "!"}.get(color, "")
+    st.markdown(
+        '<div class="result-pill">'
+        '<span>' + icon + '</span>'
+        '<div>'
+        '<div style="color:#64748b;font-size:0.68rem;font-weight:600;margin-bottom:0.1rem">ESTADO</div>'
+        + html_lib.escape(str(msg_fb)) +
+        '</div></div>',
+        unsafe_allow_html=True
+    )
 
-st.markdown(f'<div class="mqtt-badge">Wokwi MQTT · {br.status()}</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="mqtt-badge">Wokwi MQTT · ' + br.status() + '</div>',
+    unsafe_allow_html=True
+)
 
 # ─────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────
-tab_voz, tab_btn, tab_draw, tab_hist = st.tabs(["🎤 Voz", "🔢 Botones", "✏️ Dibujo", "📋 Historial"])
+tab_voz, tab_btn, tab_draw, tab_hist = st.tabs(["Voz", "Botones", "Dibujo", "Historial"])
 
 # ══ TAB VOZ ══════════════════════════════════════════════════
 with tab_voz:
-    st.markdown("""
-    <div class="info-card">
-        <div class="info-row">
-            <span class="info-icon">🎤</span>
-            <div>
-                <div class="info-ttl">INSTRUCCIÓN</div>
-                <div class="info-val">Presiona el micrófono y habla</div>
-                <div class="info-sub">Ej: "Ir al piso cuatro" · "Tres" · "Emergencia"</div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="info-card"><div class="info-row">'
+        '<span class="info-icon">&#127908;</span>'
+        '<div><div class="info-ttl">INSTRUCCION</div>'
+        '<div class="info-val">Presiona el microfono y habla</div>'
+        '<div class="info-sub">Ej: Ir al piso cuatro - Tres - Emergencia</div>'
+        '</div></div></div>',
+        unsafe_allow_html=True
+    )
 
     voice_html = """
     <style>
@@ -349,33 +347,28 @@ with tab_voz:
             background: linear-gradient(135deg, #6366f1, #4f46e5);
             color: white; border: none; border-radius: 50px;
             padding: 0.6rem 2rem; font-size: 1rem; font-weight: 700;
-            cursor: pointer; width: 100%; font-family: 'Syne', sans-serif;
+            cursor: pointer; width: 100%;
             box-shadow: 0 4px 14px rgba(99,102,241,0.4);
             transition: all 0.2s;
         }
-        #mic-btn:hover { transform: translateY(-1px); }
         #mic-btn.listening {
             background: linear-gradient(135deg, #ff1744, #b71c1c);
-            animation: pulse-btn 0.8s infinite;
         }
-        @keyframes pulse-btn { 0%,100%{opacity:1} 50%{opacity:0.7} }
         #voice-out {
             margin-top: 0.7rem; padding: 0.6rem 0.9rem;
             background: #1a2235; border: 1px solid #1e2d45;
-            border-radius: 10px; color: #e2e8f0;
-            font-family: 'Syne', sans-serif; font-size: 0.88rem;
+            border-radius: 10px; color: #e2e8f0; font-size: 0.88rem;
             min-height: 2rem;
         }
     </style>
-    <button id="mic-btn" onclick="startListen()">🎙 Iniciar escucha</button>
-    <div id="voice-out">Toca el botón y habla…</div>
-    <input type="hidden" id="voice-result" value="">
+    <button id="mic-btn" onclick="startListen()">Iniciar escucha</button>
+    <div id="voice-out">Toca el boton y habla...</div>
     <script>
     var recognizing = false;
     var recognition;
     function startListen() {
         if (!('webkitSpeechRecognition' in window)) {
-            document.getElementById('voice-out').innerText = '⚠️ Tu navegador no soporta reconocimiento de voz. Usa Chrome.';
+            document.getElementById('voice-out').innerText = 'Navegador no compatible. Usa Chrome.';
             return;
         }
         if (recognizing) { recognition.stop(); return; }
@@ -385,21 +378,20 @@ with tab_voz:
         recognition.interimResults = false;
         var btn = document.getElementById('mic-btn');
         btn.classList.add('listening');
-        btn.innerText = '⏹ Escuchando… (toca para parar)';
+        btn.innerText = 'Escuchando... (toca para parar)';
         recognizing = true;
         recognition.onresult = function(e) {
             var texto = e.results[0][0].transcript;
-            document.getElementById('voice-out').innerText = '🗣️ Escuché: "' + texto + '"';
-            document.getElementById('voice-result').value = texto;
+            document.getElementById('voice-out').innerText = 'Escuche: ' + texto;
             window.parent.postMessage({type: 'VOICE_RESULT', text: texto}, '*');
         };
         recognition.onerror = function(e) {
-            document.getElementById('voice-out').innerText = '⚠️ Error: ' + e.error;
+            document.getElementById('voice-out').innerText = 'Error: ' + e.error;
         };
         recognition.onend = function() {
             recognizing = false;
             btn.classList.remove('listening');
-            btn.innerText = '🎙 Iniciar escucha';
+            btn.innerText = 'Iniciar escucha';
         };
         recognition.start();
     }
@@ -407,15 +399,13 @@ with tab_voz:
     """
 
     components.html(voice_html, height=130)
-
     st.markdown("---")
-    st.markdown('<div class="sec-label">✍️ O escribe el comando manualmente</div>', unsafe_allow_html=True)
 
     col_inp, col_btn = st.columns([3, 1])
     with col_inp:
         voz_txt = st.text_input(
-            "Comando de voz",
-            placeholder="Ej: ir al piso 4 · tres · emergencia",
+            "Comando",
+            placeholder="Ej: ir al piso 4 - tres - emergencia",
             key="voz_input",
             label_visibility="collapsed"
         )
@@ -424,53 +414,52 @@ with tab_voz:
             if voz_txt.strip():
                 parsed = parse_voice(voz_txt)
                 if "emergency" in parsed:
-                    set_emergency(ev); br.send_emergency()
+                    set_emergency(ev)
+                    br.send_emergency()
                     st.session_state.feedback = ("red", ev["message"])
                 elif "floor" in parsed:
                     action_go(parsed["floor"], "voz")
                 else:
-                    st.session_state.feedback = ("red", parsed.get("error",""))
+                    st.session_state.feedback = ("red", parsed.get("error", ""))
                 st.rerun()
 
-    st.caption("💡 El micrófono funciona en Chrome/Edge. El resultado de voz también puedes escribirlo arriba.")
+    st.caption("El microfono funciona en Chrome/Edge.")
 
 # ══ TAB BOTONES ══════════════════════════════════════════════
 with tab_btn:
-    st.markdown('<div class="sec-label">🔢 Selecciona el piso</div>', unsafe_allow_html=True)
     cols = st.columns(3)
     for i, floor in enumerate([1, 2, 3, 4, 5, 6]):
         with cols[i % 3]:
-            if st.button(f"  {floor}  ", key=f"floor_{floor}"):
-                action_go(floor, "botón")
+            if st.button(str(floor), key="floor_" + str(floor)):
+                action_go(floor, "boton")
                 st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🚨 Emergencia", key="emg"):
-            set_emergency(ev); br.send_emergency()
+        if st.button("Emergencia", key="emg"):
+            set_emergency(ev)
+            br.send_emergency()
             st.session_state.feedback = ("red", ev["message"])
             st.rerun()
     with c2:
-        if st.button("↺ Reiniciar", key="rst"):
-            reset_ev(ev); br.send_reset()
+        if st.button("Reiniciar", key="rst"):
+            reset_ev(ev)
+            br.send_reset()
             st.session_state.feedback = ("green", "Sistema reiniciado.")
             st.rerun()
 
 # ══ TAB DIBUJO ═══════════════════════════════════════════════
 with tab_draw:
-    st.markdown("""
-    <div class="info-card">
-        <div class="info-row">
-            <span class="info-icon">✏️</span>
-            <div>
-                <div class="info-ttl">INSTRUCCIÓN</div>
-                <div class="info-val">Dibuja el número del piso</div>
-                <div class="info-sub">Escribe un número del 1 al 6 en el lienzo</div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="info-card"><div class="info-row">'
+        '<span class="info-icon">&#9998;</span>'
+        '<div><div class="info-ttl">INSTRUCCION</div>'
+        '<div class="info-val">Dibuja el numero del piso</div>'
+        '<div class="info-sub">Escribe un numero del 1 al 6 en el lienzo</div>'
+        '</div></div></div>',
+        unsafe_allow_html=True
+    )
 
     stroke_width = st.slider("Grosor del trazo", 8, 30, 16, key="stroke")
 
@@ -487,7 +476,7 @@ with tab_draw:
 
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🔍 Reconocer dígito", key="predict"):
+        if st.button("Reconocer digito", key="predict"):
             if canvas_result.image_data is not None:
                 input_image = Image.fromarray(
                     np.array(canvas_result.image_data).astype("uint8"), "RGBA"
@@ -497,31 +486,43 @@ with tab_draw:
                 if digit is None:
                     st.session_state.feedback = ("red", "No se pudo reconocer. Intenta de nuevo.")
                 elif not (1 <= digit <= 6):
-                    st.session_state.feedback = ("amber", f"Dígito {digit} fuera de rango (1-6).")
+                    st.session_state.feedback = ("amber", "Digito " + str(digit) + " fuera de rango (1-6).")
                 else:
                     action_go(digit, "dibujo")
                 st.rerun()
             else:
-                st.session_state.feedback = ("red", "El lienzo está vacío.")
+                st.session_state.feedback = ("red", "El lienzo esta vacio.")
                 st.rerun()
     with c2:
-        if st.button("🗑 Limpiar", key="clear_canvas"):
+        if st.button("Limpiar", key="clear_canvas"):
             st.session_state.draw_digit = None
             st.rerun()
 
     if st.session_state.draw_digit is not None:
-        st.markdown(f"""
-        <div class="result-pill">
-            <span>🔢</span>
-            
+        st.markdown(
+            '<div class="result-pill">'
+            '<div><div style="color:#64748b;font-size:0.68rem;font-weight:600">DIGITO DETECTADO</div>'
+            '<span style="font-family:JetBrains Mono,monospace;font-size:2rem;color:#00e5ff">'
+            + str(st.session_state.draw_digit) +
+            '</span></div></div>',
+            unsafe_allow_html=True
+        )
 
 # ══ TAB HISTORIAL ════════════════════════════════════════════
 with tab_hist:
     if not ev["history"]:
-        st.markdown('<div style="color:#64748b;font-size:0.85rem;text-align:center;padding:1.5rem 0">Sin viajes registrados aún</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="color:#64748b;font-size:0.85rem;text-align:center;padding:1.5rem 0">'
+            'Sin viajes registrados aun'
+            '</div>',
+            unsafe_allow_html=True
+        )
     else:
         for item in reversed(ev["history"][-20:]):
-            st.markdown(f'<div class="hist-item">› {item}</div>', unsafe_allow_html=True)
-        if st.button("🗑 Limpiar historial", key="clear_hist"):
+            st.markdown(
+                '<div class="hist-item">' + html_lib.escape(item) + '</div>',
+                unsafe_allow_html=True
+            )
+        if st.button("Limpiar historial", key="clear_hist"):
             ev["history"].clear()
             st.rerun()
