@@ -474,6 +474,12 @@ with tab_draw:
 
     stroke_width = st.slider("Grosor del trazo", 8, 30, 16, key="stroke")
 
+    st.markdown(
+        '<div style="height:210px; min-height:210px; background:#000; '
+        'border:2px solid #00e5ff; border-radius:12px; overflow:hidden; '
+        'margin-bottom:0.8rem;">',
+        unsafe_allow_html=True
+    )
     canvas_result = st_canvas(
         fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=stroke_width,
@@ -484,7 +490,8 @@ with tab_draw:
         drawing_mode="freedraw",
         key="canvas",
     )
-
+    st.markdown('</div>', unsafe_allow_html=True)
+    
     c1, c2 = st.columns(2)
     with c1:
         if st.button("🔍 Reconocer dígito", key="predict"):
