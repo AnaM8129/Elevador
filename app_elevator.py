@@ -503,10 +503,6 @@ iframe {
 </style>
 """, unsafe_allow_html=True)
 
-    
-""", unsafe_allow_html=True)
-    
-""", unsafe_allow_html=True)
 
     canvas_result = st_canvas(
     fill_color="rgba(255, 165, 0, 0.3)",
