@@ -2,12 +2,7 @@
 VozElevate — Ascensor Inteligente Multimodal
 Un solo archivo: app.py
 Ejecutar con: streamlit run app.py
-
-CORRECCIÓN: eliminado bokeh (incompatible con NumPy >= 1.24).
-La voz usa un componente HTML5 con st.components.v1.html
-que llama webkitSpeechRecognition y devuelve el texto via URL param.
 """
-
 
 import re
 import time
@@ -17,7 +12,7 @@ import pathlib
 import threading
 import numpy as np
 import streamlit as st
-import html as html_lib 
+import html as html_lib
 import streamlit.components.v1 as components
 from PIL import Image, ImageOps
 import tensorflow as tf
@@ -98,6 +93,16 @@ div[data-testid="stButton"]>button {
     box-shadow:0 4px 14px rgba(99,102,241,0.3) !important;
 }
 div[data-testid="stButton"]>button:hover { transform:translateY(-1px) !important; }
+
+/* ── Canvas fix ── */
+div[data-testid="stCustomComponentV1"] {
+    height: 220px !important;
+    min-height: 220px !important;
+}
+div[data-testid="stCustomComponentV1"] iframe {
+    height: 220px !important;
+    min-height: 220px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -140,9 +145,9 @@ class WokwiBridge:
     def send_reset(self):          self.publish({"cmd":"RESET"})
 
     def status(self):
-        if not MQTT_OK:      return "⚠️ paho-mqtt no instalado"
-        if self._connected:  return f"✅ Conectado · {BROKER}"
-        if self._error:      return f"❌ {self._error}"
+        if not MQTT_OK:     return "⚠️ paho-mqtt no instalado"
+        if self._connected: return f"✅ Conectado · {BROKER}"
+        if self._error:     return f"❌ {self._error}"
         return "🔄 Conectando…"
 
 # ─────────────────────────────────────────────────────────────
@@ -213,7 +218,7 @@ def predict_digit(pil_image):
         return int(np.argmax(pred[0]))
     except Exception as e:
         return None
-        
+
 # ─────────────────────────────────────────────────────────────
 # SESSION STATE
 # ─────────────────────────────────────────────────────────────
@@ -267,16 +272,14 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────
 # TARJETA DEL ASCENSOR
 # ─────────────────────────────────────────────────────────────
- 
 state = ev["state"]
 led_g = "green" if state in ("idle", "arrived") else ""
 led_a = "amber" if state == "moving"            else ""
 led_r = "red"   if state == "emergency"         else ""
- 
-# Escapar caracteres especiales para que no rompan el HTML
+
 current = ev["current"]
 msg     = html_lib.escape(str(ev["message"]))
- 
+
 dest_html = ""
 if ev["target"]:
     dest_html = (
@@ -287,7 +290,7 @@ if ev["target"]:
         'color:#6366f1;font-weight:600">' + str(ev["target"]) + '</span>'
         '</div>'
     )
- 
+
 card_html = (
     '<div class="elev-card">'
     '<div class="floor-label">PISO ACTUAL</div>'
@@ -301,8 +304,9 @@ card_html = (
     '</div>'
     '</div>'
 )
- 
+
 st.markdown(card_html, unsafe_allow_html=True)
+
 # Feedback
 fb = st.session_state.feedback
 if fb:
@@ -339,8 +343,6 @@ with tab_voz:
     </div>
     """, unsafe_allow_html=True)
 
-    # Componente HTML5 con webkitSpeechRecognition
-    # Escribe el resultado en un input oculto que Streamlit lee via query_params
     voice_html = """
     <style>
         #mic-btn {
@@ -365,56 +367,45 @@ with tab_voz:
             min-height: 2rem;
         }
     </style>
-
     <button id="mic-btn" onclick="startListen()">🎙 Iniciar escucha</button>
     <div id="voice-out">Toca el botón y habla…</div>
     <input type="hidden" id="voice-result" value="">
-
     <script>
     var recognizing = false;
     var recognition;
-
     function startListen() {
         if (!('webkitSpeechRecognition' in window)) {
             document.getElementById('voice-out').innerText = '⚠️ Tu navegador no soporta reconocimiento de voz. Usa Chrome.';
             return;
         }
         if (recognizing) { recognition.stop(); return; }
-
         recognition = new webkitSpeechRecognition();
         recognition.lang = 'es-ES';
         recognition.continuous = false;
         recognition.interimResults = false;
-
         var btn = document.getElementById('mic-btn');
         btn.classList.add('listening');
         btn.innerText = '⏹ Escuchando… (toca para parar)';
         recognizing = true;
-
         recognition.onresult = function(e) {
             var texto = e.results[0][0].transcript;
             document.getElementById('voice-out').innerText = '🗣️ Escuché: "' + texto + '"';
             document.getElementById('voice-result').value = texto;
-            // Envía el texto a Streamlit via postMessage
             window.parent.postMessage({type: 'VOICE_RESULT', text: texto}, '*');
         };
-
         recognition.onerror = function(e) {
             document.getElementById('voice-out').innerText = '⚠️ Error: ' + e.error;
         };
-
         recognition.onend = function() {
             recognizing = false;
             btn.classList.remove('listening');
             btn.innerText = '🎙 Iniciar escucha';
         };
-
         recognition.start();
     }
     </script>
     """
 
-    # Renderizamos el componente de voz
     components.html(voice_html, height=130)
 
     st.markdown("---")
@@ -483,36 +474,15 @@ with tab_draw:
 
     stroke_width = st.slider("Grosor del trazo", 8, 30, 16, key="stroke")
 
-
-  st.markdown("""
-<style>
-canvas {
-    border: 2px solid #00e5ff !important;
-    border-radius: 12px !important;
-    height: 200px !important;
-    width: 200px !important;
-}
-div[data-testid="stCustomComponentV1"] {
-    height: 220px !important;
-    min-height: 220px !important;
-}
-iframe {
-    height: 220px !important;
-    min-height: 220px !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-
     canvas_result = st_canvas(
-    fill_color="rgba(255, 165, 0, 0.3)",
-    stroke_width=stroke_width,
-    stroke_color="#00e5ff",      # trazo cyan como tu tema
-    background_color="#1a2235",  # ← oscuro pero visible contra tu app
-    height=200,
-    width=200,
-    drawing_mode="freedraw",
-    key="canvas",
+        fill_color="rgba(255, 165, 0, 0.3)",
+        stroke_width=stroke_width,
+        stroke_color="#FFFFFF",
+        background_color="#000000",
+        height=200,
+        width=200,
+        drawing_mode="freedraw",
+        key="canvas",
     )
 
     c1, c2 = st.columns(2)
@@ -548,7 +518,7 @@ iframe {
                 <span style="font-family:'JetBrains Mono',monospace;font-size:2rem;color:#00e5ff">{st.session_state.draw_digit}</span>
             </div>
         </div>""", unsafe_allow_html=True)
-        
+
 # ══ TAB HISTORIAL ════════════════════════════════════════════
 with tab_hist:
     if not ev["history"]:
