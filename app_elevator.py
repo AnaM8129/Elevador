@@ -484,14 +484,14 @@ with tab_draw:
     stroke_width = st.slider("Grosor del trazo", 8, 30, 16, key="stroke")
 
     canvas_result = st_canvas(
-        fill_color="rgba(255, 165, 0, 0.3)",
-        stroke_width=stroke_width,
-        stroke_color="#FFFFFF",
-        background_color="#000000",
-        height=200,
-        width=200,
-        drawing_mode="freedraw",
-        key="canvas",
+    fill_color="rgba(255, 165, 0, 0.3)",
+    stroke_width=stroke_width,
+    stroke_color="#00e5ff",      # trazo cyan como tu tema
+    background_color="#1a2235",  # ← oscuro pero visible contra tu app
+    height=200,
+    width=200,
+    drawing_mode="freedraw",
+    key="canvas",
     )
 
     c1, c2 = st.columns(2)
