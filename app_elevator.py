@@ -484,23 +484,24 @@ with tab_draw:
     stroke_width = st.slider("Grosor del trazo", 8, 30, 16, key="stroke")
 
 
-   st.markdown("""
-    <style>
-        canvas {
-        border: 2px solid #00e5ff !important;
-        border-radius: 12px !important;
-        height: 200px !important;
-        width: 200px !important;
-    }
-    div[data-testid="stCustomComponentV1"] {
-        height: 220px !important;
-        min-height: 220px !important;
-    }
-    iframe {
-        height: 220px !important;
-        min-height: 220px !important;
-    }
-    </style>
+  st.markdown("""
+<style>
+canvas {
+    border: 2px solid #00e5ff !important;
+    border-radius: 12px !important;
+    height: 200px !important;
+    width: 200px !important;
+}
+div[data-testid="stCustomComponentV1"] {
+    height: 220px !important;
+    min-height: 220px !important;
+}
+iframe {
+    height: 220px !important;
+    min-height: 220px !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
     
 """, unsafe_allow_html=True)
