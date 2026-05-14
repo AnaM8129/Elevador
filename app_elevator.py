@@ -479,17 +479,18 @@ with tab_draw:
         'border:2px solid #00e5ff; border-radius:12px; overflow:hidden; '
         'margin-bottom:0.8rem;">',
         unsafe_allow_html=True
-    )
-    canvas_result = st_canvas(
-        fill_color="rgba(255, 165, 0, 0.3)",
+
+        canvas_result = st_canvas(
+        fill_color="rgba(0, 229, 255, 0.1)",
         stroke_width=stroke_width,
-        stroke_color="#FFFFFF",
-        background_color="#000000",
+        stroke_color="#00e5ff",
+        background_color="#1a2235",
         height=200,
         width=200,
         drawing_mode="freedraw",
         key="canvas",
     )
+    
     st.markdown('</div>', unsafe_allow_html=True)
     
     c1, c2 = st.columns(2)
