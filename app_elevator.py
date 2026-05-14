@@ -483,6 +483,19 @@ with tab_draw:
 
     stroke_width = st.slider("Grosor del trazo", 8, 30, 16, key="stroke")
 
+
+    st.markdown("""
+    <style>
+    canvas {
+    border: 2px solid #00e5ff !important;
+    border-radius: 12px !important;
+    display: block !important;
+    visibility: visible !important;
+    }
+    </style>
+    
+""", unsafe_allow_html=True)
+
     canvas_result = st_canvas(
     fill_color="rgba(255, 165, 0, 0.3)",
     stroke_width=stroke_width,
